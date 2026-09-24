@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drishti road-safety exchange</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Noto+Sans+Kannada:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  /* Palette taken from Indian highway signage: direction-sign green, warning amber, hazard red, asphalt. */
+  :root { --sign: #0E6B3A; --amber: #F2A900; --red: #C8261E; --asphalt: #24282C;
+          --asphalt-2: #30353A; --line: #F4F4F0; --muted: #A9AFB4; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { display: grid; grid-template-rows: auto 1fr; background: var(--asphalt); color: var(--line);
+    font: 15px/1.45 "Barlow", "Noto Sans Kannada", "Noto Sans Devanagari", Arial, sans-serif; }
+
+  header { background: var(--sign); display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center;
+    padding: 10px 18px; border-bottom: 3px solid var(--line); }
+  header h1 { margin: 0 auto 0 0; font-size: 22px; font-weight: 700; }
+  header label { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+  select, button { font: inherit; border-radius: 4px; border: 2px solid var(--line); padding: 3px 8px; }
+  select { background: var(--sign); color: var(--line); }
+  a { color: var(--line); font-weight: 600; }
+  :focus-visible { outline: 3px solid var(--amber); outline-offset: 2px; }
+
+  main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+  #map { min-height: 300px; }
+  aside { overflow-y: auto; padding: 16px 18px; border-left: 1px solid #3c4247; }
+  aside h2 { font-size: 17px; margin: 18px 0 8px; }
+  aside h2:first-child { margin-top: 0; }
+
+  .counts { display: grid; gap: 6px; }
+  .count { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 10px;
+    background: var(--asphalt-2); border-left: 6px solid var(--c); }
+  .count b { font-size: 22px; }
+
+  #feed { list-style: none; margin: 0; padding: 0; }
+  #feed li { padding: 8px 0; border-bottom: 1px dashed #4a5056; }
+  #feed .t { font-weight: 700; color: var(--c); }
+  #feed small { color: var(--muted); display: block; }
+  .empty { color: var(--muted); }
+
+  .consent label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+  .consent input { width: 18px; height: 18px; accent-color: var(--sign); }
+  .hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+  button { background: var(--amber); color: #000; border-color: var(--amber); font-weight: 700; margin-top: 14px; cursor: pointer; }
+
+  /* One deliberate motion: a new event flashes once on the map. */
+  .fresh { animation: flash 1.2s ease-out 1; }
+  @keyframes flash { from { stroke-width: 18; stroke-opacity: .9; } to { stroke-width: 2; stroke-opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .fresh { animation: none; } }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 55vh auto; } aside { border-left: 0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Drishti road-safety exchange</h1>
+  <label><span id="lViewer">Viewing as</span>
+    <select id="viewer">
+      <option value="highway">Highway authority</option>
+      <option value="police">Traffic police</option>
+      <option value="public">Public</option>
+    </select>
+  </label>
+  <label><span id="lLang">Language</span>
+    <select id="lang"><option value="en">English</option><option value="kn">ಕನ್ನಡ</option><option value="hi">हिन्दी</option></select>
+  </label>
+  <a href="/docs" target="_blank" rel="noopener" id="lApi">Open API docs</a>
+</header>
+<main>
+  <div id="map" aria-label="Map of hazard events"></div>
+  <aside>
+    <h2 id="hCounts">Events by type</h2>
+    <div class="counts" id="counts"></div>
+    <h2 id="hFeed">Latest events</h2>
+    <ul id="feed"></ul>
+    <h2 id="hConsent">Data sharing (set by fleet owner)</h2>
+    <div class="consent">
+      <label><input type="checkbox" id="c_exact"> <span id="lExact">Share exact location</span></label>
+      <label><input type="checkbox" id="c_highway"> <span id="lHw">Highway authority</span></label>
+      <label><input type="checkbox" id="c_police"> <span id="lPol">Traffic police</span></label>
+      <label><input type="checkbox" id="c_public"> <span id="lPub">Public</span></label>
+      <p class="hint" id="lHint">Only anonymised events are shared: no video, faces or number plates.</p>
+    </div>
+    <button id="seed">Load sample history</button>
+  </aside>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
+<script>
+const COLORS = { oncoming: "#C8261E", pedestrian: "#F2A900", vehicle_close: "#4FA3E0" };
+const I18N = {
+  en: { title: "Drishti road-safety exchange", lViewer: "Viewing as", lLang: "Language", lApi: "Open API docs",
+        hCounts: "Events by type", hFeed: "Latest events", hConsent: "Data sharing (set by fleet owner)",
+        lExact: "Share exact location", lHw: "Highway authority", lPol: "Traffic police", lPub: "Public",
+        lHint: "Only anonymised events are shared: no video, faces or number plates.", seed: "Load sample history",
+        oncoming: "Oncoming vehicle", pedestrian: "Pedestrian", vehicle_close: "Vehicle close ahead",
+        none: "No events yet. Play the road video or load sample history.",
+        denied: "No access: the fleet owner has not shared data with this viewer." },
+  kn: { title: "ದೃಷ್ಟಿ ರಸ್ತೆ ಸುರಕ್ಷತಾ ವಿನಿಮಯ", lViewer: "ವೀಕ್ಷಕ", lLang: "ಭಾಷೆ", lApi: "API ದಾಖಲೆಗಳು",
+        hCounts: "ಪ್ರಕಾರದ ಪ್ರಕಾರ ಘಟನೆಗಳು", hFeed: "ಇತ್ತೀಚಿನ ಘಟನೆಗಳು", hConsent: "ಡೇಟಾ ಹಂಚಿಕೆ (ಫ್ಲೀಟ್ ಮಾಲೀಕರು)",
+        lExact: "ನಿಖರ ಸ್ಥಳ ಹಂಚಿ", lHw: "ಹೆದ್ದಾರಿ ಪ್ರಾಧಿಕಾರ", lPol: "ಸಂಚಾರ ಪೊಲೀಸ್", lPub: "ಸಾರ್ವಜನಿಕ",
+        lHint: "ಅನಾಮಧೇಯ ಘಟನೆಗಳು ಮಾತ್ರ ಹಂಚಲಾಗುತ್ತದೆ: ವಿಡಿಯೋ, ಮುಖ ಅಥವಾ ನಂಬರ್ ಪ್ಲೇಟ್ ಇಲ್ಲ.", seed: "ಮಾದರಿ ಇತಿಹಾಸ ಲೋಡ್ ಮಾಡಿ",
+        oncoming: "ಎದುರಿನ ವಾಹನ", pedestrian: "ಪಾದಚಾರಿ", vehicle_close: "ಮುಂದೆ ಹತ್ತಿರದ ವಾಹನ",
+        none: "ಇನ್ನೂ ಘಟನೆಗಳಿಲ್ಲ.", denied: "ಪ್ರವೇಶವಿಲ್ಲ: ಫ್ಲೀಟ್ ಮಾಲೀಕರು ಡೇಟಾ ಹಂಚಿಲ್ಲ." },
+  hi: { title: "दृष्टि सड़क सुरक्षा एक्सचेंज", lViewer: "दर्शक", lLang: "भाषा", lApi: "API दस्तावेज़",
+        hCounts: "प्रकार अनुसार घटनाएँ", hFeed: "नवीनतम घटनाएँ", hConsent: "डेटा साझा करना (फ्लीट मालिक)",
+        lExact: "सटीक स्थान साझा करें", lHw: "राजमार्ग प्राधिकरण", lPol: "यातायात पुलिस", lPub: "जनता",
+        lHint: "केवल गुमनाम घटनाएँ साझा होती हैं: कोई वीडियो, चेहरा या नंबर प्लेट नहीं।", seed: "नमूना इतिहास लोड करें",
+        oncoming: "सामने से वाहन", pedestrian: "पैदल यात्री", vehicle_close: "आगे नज़दीकी वाहन",
+        none: "अभी कोई घटना नहीं।", denied: "पहुँच नहीं: फ्लीट मालिक ने डेटा साझा नहीं किया।" },
+};
+const $ = id => document.getElementById(id);
+let t = I18N.en, events = [], lastId = 0, denied = false;
+
+const map = L.map("map").setView([12.99, 74.93], 11);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { maxZoom: 18, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+const heat = L.heatLayer([], { radius: 28, blur: 22 }).addTo(map);
+const markers = L.layerGroup().addTo(map);
+fetch("/api/route").then(r => r.json()).then(pts =>
+  L.polyline(pts, { color: "#0E6B3A", weight: 5, opacity: 0.7 }).addTo(map));
+
+function applyLang() {
+  t = I18N[$("lang").value];
+  for (const id of ["title","lViewer","lLang","lApi","hCounts","hFeed","hConsent","lExact","lHw","lPol","lPub","lHint","seed"]) $(id).textContent = t[id];
+  renderSide();
+}
+
+function addMarker(e, fresh) {
+  L.circleMarker([e.lat, e.lon], { radius: 7, color: "#fff", weight: 2, fillColor: COLORS[e.type],
+    fillOpacity: 1, className: fresh ? "fresh" : "" })
+    .bindPopup(`<b>${t[e.type]}</b><br>${e.reason}<br>${new Date(e.time).toLocaleString()}<br>${e.vehicle}`)
+    .addTo(markers);
+}
+
+function renderSide() {
+  $("counts").innerHTML = Object.keys(COLORS).map(k =>
+    `<div class="count" style="--c:${COLORS[k]}"><span>${t[k]}</span><b>${events.filter(e => e.type === k).length}</b></div>`).join("");
+  const feed = $("feed");
+  if (denied) { feed.innerHTML = `<li class="empty">${t.denied}</li>`; return; }
+  if (!events.length) { feed.innerHTML = `<li class="empty">${t.none}</li>`; return; }
+  feed.innerHTML = [...events].sort((a, b) => b.time.localeCompare(a.time)).slice(0, 12).map(e =>
+    `<li style="--c:${COLORS[e.type]}"><span class="t">${t[e.type]}</span> ${e.reason}
+     <small>${new Date(e.time).toLocaleString()}, ${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}</small></li>`).join("");
+}
+
+async function poll() {
+  try {
+    const r = await fetch(`/api/events?viewer=${$("viewer").value}&since=${lastId}`);
+    denied = r.status === 403;
+    if (r.ok) {
+      const fresh = await r.json();
+      for (const e of fresh) { events.push(e); addMarker(e, lastId > 0); lastId = Math.max(lastId, e.id); }
+      if (fresh.length) heat.setLatLngs(events.map(e => [e.lat, e.lon, 0.6]));
+    }
+    renderSide();
+  } catch { /* server restarting; try again next tick */ }
+}
+
+function reset() { events = []; lastId = 0; markers.clearLayers(); heat.setLatLngs([]); poll(); }
+
+async function loadConsent() {
+  const c = await (await fetch("/api/consent")).json();
+  $("c_exact").checked = c.exact_location;
+  for (const k of ["highway", "police", "public"]) $("c_" + k).checked = !!c.share_with[k];
+}
+async function saveConsent() {
+  const body = { exact_location: $("c_exact").checked,
+    share_with: { highway: $("c_highway").checked, police: $("c_police").checked, public: $("c_public").checked } };
+  await fetch("/api/consent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  reset();
+}
+
+document.querySelectorAll(".consent input").forEach(el => el.addEventListener("change", saveConsent));
+$("viewer").addEventListener("change", reset);
+$("lang").addEventListener("change", () => { applyLang(); markers.clearLayers(); events.forEach(e => addMarker(e, false)); });
+$("seed").addEventListener("click", async () => { await fetch("/api/seed", { method: "POST" }); reset(); });
+
+applyLang(); loadConsent(); poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>

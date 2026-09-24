@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drishti rear screen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Noto+Sans+Kannada:wght@700&family=Noto+Sans+Devanagari:wght@700&display=swap" rel="stylesheet">
+<style>
+  /* Pure black: on a real LED panel, black pixels are switched off. */
+  :root { --red: #E2231A; --amber: #FFB400; --white: #F4F4F0; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--white); overflow: hidden;
+    font-family: "Barlow Condensed", "Noto Sans Kannada", "Noto Sans Devanagari", Arial, sans-serif; }
+  #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #warn { position: absolute; top: 0; left: 0; right: 0; display: none; padding: 1.5vh 3vw;
+    background: var(--red); color: var(--white); font-weight: 800; font-size: 5.5vw;
+    line-height: 1.15; text-align: center; }
+  #warn.amber { background: var(--amber); color: #000; }
+  #signals { position: absolute; bottom: 3vh; left: 4vw; right: 4vw; display: flex;
+    justify-content: space-between; align-items: center; }
+  .arrow { font-size: 11vw; line-height: 1; color: var(--amber); visibility: hidden; }
+  .arrow.on { visibility: visible; animation: blink 0.5s steps(1) infinite; }
+  #brake { font-size: 6vw; font-weight: 800; color: var(--red); border: 0.6vw solid var(--red);
+    border-radius: 1vw; padding: 0 2vw; visibility: hidden; }
+  #brake.on { visibility: visible; }
+  .note { position: absolute; inset: 0; display: none; place-items: center; text-align: center;
+    font-size: 3vw; color: #8a8a86; }
+  #keys { position: fixed; top: 8px; right: 12px; font: 13px Arial, sans-serif; color: #6d6d69; }
+  @keyframes blink { 50% { visibility: hidden; } }
+  @media (prefers-reduced-motion: reduce) { .arrow.on { animation: none; } }
+</style>
+</head>
+<body>
+  <img id="video" src="/stream" alt="Live view of the road ahead of the truck">
+  <div id="warn" role="alert"></div>
+  <div id="signals">
+    <span id="left" class="arrow" aria-label="Turning left">&#9664;</span>
+    <span id="brake">BRAKE</span>
+    <span id="right" class="arrow" aria-label="Turning right">&#9654;</span>
+  </div>
+  <div id="standby" class="note">Screen off: no vehicle close behind</div>
+  <div id="paused" class="note">Video paused: delay too high</div>
+  <div id="keys">P vehicle behind, B brake, arrow keys indicators <span id="lag"></span></div>
+
+<script>
+const TEXT = {
+  oncoming:      ["ONCOMING VEHICLE – DO NOT OVERTAKE", "ಎದುರಿನಿಂದ ವಾಹನ – ಓವರ್‌ಟೇಕ್ ಮಾಡಬೇಡಿ", "सामने से वाहन – ओवरटेक न करें"],
+  pedestrian:    ["PEDESTRIAN AHEAD", "ಮುಂದೆ ಪಾದಚಾರಿ", "आगे पैदल यात्री"],
+  vehicle_close: ["VEHICLE AHEAD – SLOW DOWN", "ಮುಂದೆ ವಾಹನ – ನಿಧಾನವಾಗಿ", "आगे वाहन – धीमे चलें"],
+  brake:         ["BRAKE", "ಬ್ರೇಕ್", "ब्रेक"],
+};
+const $ = id => document.getElementById(id);
+let st = {}, lang = 0;
+
+function render() {
+  const on = !!st.near, showVideo = on && !st.blank;
+  $("video").style.visibility = showVideo ? "visible" : "hidden";
+  $("standby").style.display = on ? "none" : "grid";
+  $("paused").style.display = on && st.blank ? "grid" : "none";
+
+  const hz = showVideo ? st.hazard : null;   // stale video = no stale warnings
+  $("warn").style.display = hz ? "block" : "none";
+  if (hz) { $("warn").textContent = TEXT[hz][lang]; $("warn").className = hz === "oncoming" ? "" : "amber"; }
+
+  // Brake and indicators still show when video is paused (fail-safe)
+  $("brake").textContent = TEXT.brake[lang];
+  $("brake").classList.toggle("on", on && st.brake);
+  $("left").classList.toggle("on", on && st.left);
+  $("right").classList.toggle("on", on && st.right);
+  $("lag").textContent = st.lag_ms != null ? `(delay ${st.lag_ms} ms)` : "";
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onmessage = e => { st = JSON.parse(e.data); render(); };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+
+const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+document.addEventListener("keydown", e => {
+  const s = { brake: !!st.brake, left: !!st.left, right: !!st.right };
+  if (e.key === "p" || e.key === "P") post("/api/proximity", { near: !st.near });
+  else if (e.key === "b" || e.key === "B") post("/api/signal", { ...s, brake: !s.brake });
+  else if (e.key === "ArrowLeft") post("/api/signal", { ...s, left: !s.left, right: false });
+  else if (e.key === "ArrowRight") post("/api/signal", { ...s, right: !s.right, left: false });
+});
+
+setInterval(() => { lang = (lang + 1) % 3; render(); }, 1500);  // English → Kannada → Hindi
+connect();
+</script>
+</body>
+</html>
