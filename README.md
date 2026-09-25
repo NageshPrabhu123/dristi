@@ -7,6 +7,8 @@ A front camera shows the road ahead on a screen at the back of a truck or bus, s
 can see oncoming traffic and hazards. Every hazard is also published as an anonymised event through
 an open API, so highway authorities get a live map of dangerous stretches.
 
+![Drishti system overview](Wireframe.png)
+
 ## What's in the prototype
 
 | Part | File | What it does |
